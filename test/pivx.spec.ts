@@ -2,12 +2,15 @@ import * as assert from 'assert';
 import { describe, it } from 'mocha';
 import * as tools from 'uint8array-tools';
 import bs58check from 'bs58check';
+import { script as bscript } from 'bitcoinjs-lib';
 import {
   pivx,
   parsePivxBase58Address,
   encodePivxAddress,
   encodePivxExchangeAddress,
   encodePivxStakingAddress,
+  pivxAddressToOutputScript,
+  toOutputScript,
 } from 'bitcoinjs-lib/pivx';
 
 describe('PIVX Address Support', () => {
@@ -255,6 +258,108 @@ describe('PIVX Address Support', () => {
       assert.deepStrictEqual(
         parsePivxBase58Address(exchangeAddr, pivx).hash,
         hash,
+      );
+    });
+  });
+  
+  describe('pivxAddressToOutputScript', () => {
+    const testHash = tools.fromHex('1234567890abcdef1234567890abcdef12345678');
+    
+    it('should generate P2PKH script for D-prefix address', () => {
+      const address = encodePivxAddress(testHash, 0x1e);
+      const script = pivxAddressToOutputScript(address, pivx);
+      
+      // P2PKH script: OP_DUP OP_HASH160 <hash> OP_EQUALVERIFY OP_CHECKSIG
+      const decompiled = bscript.decompile(script);
+      assert.ok(decompiled);
+      assert.strictEqual(decompiled.length, 5);
+      assert.strictEqual(decompiled[0], bscript.OPS.OP_DUP);
+      assert.strictEqual(decompiled[1], bscript.OPS.OP_HASH160);
+      assert.deepStrictEqual(decompiled[2], testHash);
+      assert.strictEqual(decompiled[3], bscript.OPS.OP_EQUALVERIFY);
+      assert.strictEqual(decompiled[4], bscript.OPS.OP_CHECKSIG);
+    });
+    
+    it('should generate P2PKH script for exchange address (EX-prefix)', () => {
+      const address = encodePivxExchangeAddress(testHash, pivx);
+      const script = pivxAddressToOutputScript(address, pivx);
+      
+      // Exchange addresses use OP_EXCHANGEADDR (0xe0) + P2PKH script format
+      const decompiled = bscript.decompile(script);
+      assert.ok(decompiled);
+      assert.strictEqual(decompiled.length, 6);
+      assert.strictEqual(decompiled[0], 0xe0); // OP_EXCHANGEADDR
+      assert.strictEqual(decompiled[1], bscript.OPS.OP_DUP);
+      assert.strictEqual(decompiled[2], bscript.OPS.OP_HASH160);
+      assert.deepStrictEqual(decompiled[3], testHash);
+      assert.strictEqual(decompiled[4], bscript.OPS.OP_EQUALVERIFY);
+      assert.strictEqual(decompiled[5], bscript.OPS.OP_CHECKSIG);
+      
+      // Verify script length: 26 bytes
+      // 1 (OP_EXCHANGEADDR) + 1 (OP_DUP) + 1 (OP_HASH160) + 1 (push 20) + 20 (hash) + 1 (OP_EQUALVERIFY) + 1 (OP_CHECKSIG)
+      assert.strictEqual(script.length, 26);
+    });
+    
+    it('should generate P2PKH script for staking address (S-prefix)', () => {
+      const address = encodePivxStakingAddress(testHash, pivx);
+      const script = pivxAddressToOutputScript(address, pivx);
+      
+      // Staking addresses use standard P2PKH script format (no OP_EXCHANGEADDR)
+      const decompiled = bscript.decompile(script);
+      assert.ok(decompiled);
+      assert.strictEqual(decompiled.length, 5);
+      assert.strictEqual(decompiled[0], bscript.OPS.OP_DUP);
+      assert.strictEqual(decompiled[1], bscript.OPS.OP_HASH160);
+      assert.deepStrictEqual(decompiled[2], testHash);
+      assert.strictEqual(decompiled[3], bscript.OPS.OP_EQUALVERIFY);
+      assert.strictEqual(decompiled[4], bscript.OPS.OP_CHECKSIG);
+      
+      // Verify script length: 25 bytes (standard P2PKH)
+      assert.strictEqual(script.length, 25);
+    });
+    
+    it('should generate P2SH script for P2SH address', () => {
+      const address = encodePivxAddress(testHash, 0x0d);
+      const script = pivxAddressToOutputScript(address, pivx);
+      
+      // P2SH script: OP_HASH160 <hash> OP_EQUAL
+      const decompiled = bscript.decompile(script);
+      assert.ok(decompiled);
+      assert.strictEqual(decompiled.length, 3);
+      assert.strictEqual(decompiled[0], bscript.OPS.OP_HASH160);
+      assert.deepStrictEqual(decompiled[1], testHash);
+      assert.strictEqual(decompiled[2], bscript.OPS.OP_EQUAL);
+    });
+    
+    it('should produce same script for different address types with same hash', () => {
+      const p2pkhScript = pivxAddressToOutputScript(encodePivxAddress(testHash, 0x1e), pivx);
+      const stakingScript = pivxAddressToOutputScript(encodePivxStakingAddress(testHash, pivx), pivx);
+      const exchangeScript = pivxAddressToOutputScript(encodePivxExchangeAddress(testHash, pivx), pivx);
+      
+      // P2PKH and staking should produce identical scripts (25 bytes)
+      assert.deepStrictEqual(stakingScript, p2pkhScript);
+      assert.strictEqual(p2pkhScript.length, 25);
+      
+      // Exchange script should be different (26 bytes with OP_EXCHANGEADDR)
+      assert.notDeepEqual(exchangeScript, p2pkhScript);
+      assert.strictEqual(exchangeScript.length, 26);
+      
+      // Verify exchange script starts with OP_EXCHANGEADDR (0xe0)
+      assert.strictEqual(exchangeScript[0], 0xe0);
+    });
+    
+    it('toOutputScript alias should work', () => {
+      const address = encodePivxExchangeAddress(testHash, pivx);
+      const script1 = pivxAddressToOutputScript(address, pivx);
+      const script2 = toOutputScript(address, pivx);
+      
+      assert.deepStrictEqual(script1, script2);
+    });
+    
+    it('should throw on invalid address', () => {
+      assert.throws(
+        () => pivxAddressToOutputScript('InvalidAddress', pivx),
+        /Invalid checksum|Non-base58 character/,
       );
     });
   });

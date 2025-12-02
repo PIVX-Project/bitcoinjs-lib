@@ -9,12 +9,15 @@
  */
 import bs58check from 'bs58check';
 import * as tools from 'uint8array-tools';
+import * as bscript from '../script.js';
 import {
   PivxNetwork,
   PivxAddressType,
   ParsedPivxAddress,
   VersionPrefix,
 } from './types.js';
+
+const OPS = bscript.OPS;
 
 /**
  * Checks if two version prefixes are equal.
@@ -218,4 +221,106 @@ export function encodePivxStakingAddress(
   network: PivxNetwork,
 ): string {
   return encodePivxAddress(hash, network.pivxPrefixes.staking);
+}
+
+/**
+ * Converts a PIVX address to its output script (scriptPubKey).
+ * 
+ * Supports all PIVX address types:
+ * - P2PKH addresses (D-prefix): Standard P2PKH script
+ * - P2SH addresses: Standard P2SH script
+ * - Staking addresses (S-prefix): Standard P2PKH script (same as regular P2PKH)
+ * - Exchange addresses (EX-prefix): OP_EXCHANGEADDR + P2PKH script
+ * 
+ * Note: PIVX exchange addresses use a special OP_EXCHANGEADDR (0xe0) opcode
+ * at the beginning of the script to identify outputs that cannot receive
+ * shielded (private) funds. The script format is:
+ * OP_EXCHANGEADDR OP_DUP OP_HASH160 <hash> OP_EQUALVERIFY OP_CHECKSIG
+ * 
+ * Reference: PIVX Core src/script/script.cpp - IsPayToExchangeAddress()
+ * 
+ * @param address - The PIVX address string to convert
+ * @param network - The PIVX network configuration
+ * @returns The output script (scriptPubKey) as Uint8Array
+ * @throws {Error} If the address is invalid or has unknown prefix
+ * 
+ * @example
+ * ```typescript
+ * // Exchange address (special OP_EXCHANGEADDR opcode)
+ * const script = pivxAddressToOutputScript('EX...', pivx);
+ * // Returns: OP_EXCHANGEADDR OP_DUP OP_HASH160 <hash> OP_EQUALVERIFY OP_CHECKSIG
+ * // (26 bytes total)
+ * 
+ * // Staking address (standard P2PKH)
+ * const script2 = pivxAddressToOutputScript('S...', pivx);
+ * // Returns: OP_DUP OP_HASH160 <hash> OP_EQUALVERIFY OP_CHECKSIG
+ * // (25 bytes)
+ * 
+ * // Regular P2PKH
+ * const script3 = pivxAddressToOutputScript('D...', pivx);
+ * // Returns: OP_DUP OP_HASH160 <hash> OP_EQUALVERIFY OP_CHECKSIG
+ * // (25 bytes)
+ * 
+ * // P2SH
+ * const script4 = pivxAddressToOutputScript('6G...', pivx);
+ * // Returns: OP_HASH160 <hash> OP_EQUAL
+ * // (23 bytes)
+ * ```
+ */
+export function pivxAddressToOutputScript(
+  address: string,
+  network: PivxNetwork,
+): Uint8Array {
+  const parsed = parsePivxBase58Address(address, network);
+  
+  switch (parsed.type) {
+    case 'p2pkh':
+    case 'staking':
+      // Standard P2PKH output script:
+      // OP_DUP OP_HASH160 <hash> OP_EQUALVERIFY OP_CHECKSIG
+      return bscript.compile([
+        OPS.OP_DUP,
+        OPS.OP_HASH160,
+        parsed.hash,
+        OPS.OP_EQUALVERIFY,
+        OPS.OP_CHECKSIG,
+      ]);
+    
+    case 'exchange':
+      // Exchange address output script (PIVX-specific):
+      // OP_EXCHANGEADDR OP_DUP OP_HASH160 <hash> OP_EQUALVERIFY OP_CHECKSIG
+      // OP_EXCHANGEADDR = 0xe0 (224 decimal)
+      // This prevents shielded (private) funds from being sent to exchange addresses
+      return bscript.compile([
+        0xe0, // OP_EXCHANGEADDR
+        OPS.OP_DUP,
+        OPS.OP_HASH160,
+        parsed.hash,
+        OPS.OP_EQUALVERIFY,
+        OPS.OP_CHECKSIG,
+      ]);
+    
+    case 'p2sh':
+      // P2SH output script:
+      // OP_HASH160 <hash> OP_EQUAL
+      return bscript.compile([
+        OPS.OP_HASH160,
+        parsed.hash,
+        OPS.OP_EQUAL,
+      ]);
+    
+    default:
+      throw new Error(`Unknown PIVX address type: ${parsed.type}`);
+  }
+}
+
+/**
+ * Alias for pivxAddressToOutputScript for consistency with bitcoinjs-lib naming.
+ * @see pivxAddressToOutputScript
+ */
+export function toOutputScript(
+  address: string,
+  network: PivxNetwork,
+): Uint8Array {
+  return pivxAddressToOutputScript(address, network);
 }
